@@ -6,7 +6,7 @@ import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/providers/AuthProvider';
 
 export default function SignInScreen() {
-  const { signIn, signUp, session, loading } = useAuth();
+  const { signIn, session, loading } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -26,14 +26,6 @@ export default function SignInScreen() {
       return;
     }
     await signIn({ email, password });
-  };
-
-  const onSignUp = async () => {
-    if (!email || !password) {
-      Alert.alert('メールとパスワードを入力してください');
-      return;
-    }
-    await signUp({ email, password });
   };
 
   return (
@@ -57,12 +49,6 @@ export default function SignInScreen() {
 
       <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={onSignIn} disabled={loading}>
         <Text style={styles.buttonText}>{loading ? '処理中...' : 'ログイン'}</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.button, styles.secondaryButton, loading && styles.buttonDisabled]}
-        onPress={onSignUp}
-        disabled={loading}>
-        <Text style={styles.buttonText}>新規登録</Text>
       </TouchableOpacity>
     </View>
   );
@@ -91,9 +77,6 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 8,
     alignItems: 'center',
-  },
-  secondaryButton: {
-    backgroundColor: '#3fb950',
   },
   buttonText: {
     color: 'white',
