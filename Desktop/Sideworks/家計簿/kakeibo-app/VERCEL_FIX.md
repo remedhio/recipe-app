@@ -90,14 +90,29 @@ npm error enoent Could not read package.json
 
 これは、Vercelがプロジェクトのルートディレクトリを正しく認識していない可能性があります。
 
-### 解決方法
+### 解決方法（重要）
 
 1. Vercelダッシュボード → Settings → General
 2. **Root Directory** セクションを確認
-3. もし設定されている場合は、**空欄にする**（削除）
-4. または、プロジェクトのルートディレクトリが正しいか確認
-5. Save をクリック
-6. 再デプロイ
+3. **必ず空欄にする**（何か設定されている場合は削除）
+4. Save をクリック
+5. 再デプロイ
+
+**重要**: Root Directoryが設定されていると、Vercelが間違ったディレクトリでビルドを実行しようとします。必ず空欄にしてください。
+
+### それでも解決しない場合
+
+プロジェクトを一度削除して、再インポートしてみてください：
+
+1. Vercelダッシュボードでプロジェクトを削除
+2. 「New Project」をクリック
+3. GitHubリポジトリ `kakeibo-app` を選択
+4. **Root Directory** は空欄のまま
+5. Framework Preset: `Other`
+6. Build Command: `npm install && npm run build`
+7. Output Directory: `dist`
+8. 環境変数を設定
+9. Deploy
 
 ## 確認事項
 
