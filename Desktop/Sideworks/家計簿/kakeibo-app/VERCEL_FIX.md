@@ -32,15 +32,14 @@
 npm install && npm run build
 ```
 
-または、より確実に：
-```
-npm ci && npx expo export --platform web
-```
+**重要**: `npm ci`は使わないでください。`npm install`を使用してください。
 
 **Output Directory**:
 ```
 dist
 ```
+
+**重要**: Output Directoryの「Override」トグルを**ON**にして、`dist`を設定してください。
 
 **Install Command**:
 （空欄のまま、または削除）
