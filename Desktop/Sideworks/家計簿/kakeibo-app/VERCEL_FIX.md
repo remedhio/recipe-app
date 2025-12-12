@@ -76,10 +76,30 @@ Build Completed in /vercel/output [50ms]
 2. Vercelダッシュボードで上記の設定を行う
 3. 再デプロイ
 
+## エラー: package.jsonが見つからない場合
+
+エラーログに以下が表示される場合：
+```
+npm error path /vercel/path0/package.json
+npm error enoent Could not read package.json
+```
+
+これは、Vercelがプロジェクトのルートディレクトリを正しく認識していない可能性があります。
+
+### 解決方法
+
+1. Vercelダッシュボード → Settings → General
+2. **Root Directory** セクションを確認
+3. もし設定されている場合は、**空欄にする**（削除）
+4. または、プロジェクトのルートディレクトリが正しいか確認
+5. Save をクリック
+6. 再デプロイ
+
 ## 確認事項
 
 - [ ] Framework Presetが「Other」になっている
 - [ ] Build Commandが「npm run build」になっている
 - [ ] Output Directoryが「dist」になっている
+- [ ] **Root Directoryが空欄（または正しく設定）になっている**
 - [ ] 環境変数（EXPO_PUBLIC_SUPABASE_URL、EXPO_PUBLIC_SUPABASE_ANON_KEY）が設定されている
 - [ ] 再デプロイ時に「Use existing Build Cache」のチェックを外した
