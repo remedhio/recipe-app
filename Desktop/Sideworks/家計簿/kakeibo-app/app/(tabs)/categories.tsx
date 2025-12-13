@@ -12,6 +12,7 @@ type Category = {
   type: 'income' | 'expense';
   color: string | null;
   parent_id: string | null;
+  order: number | null;
   created_at: string;
 };
 
@@ -53,46 +54,77 @@ export default function CategoriesScreen() {
     const result: Category[] = [];
     const addedIds = new Set<string>();
 
-    // 支出: 親カテゴリごとにグループ化
-    parentCategories
-      .filter(p => p.type === 'expense')
-      .forEach(parent => {
-        if (!addedIds.has(parent.id)) {
-          result.push(parent);
-          addedIds.add(parent.id);
-        }
-        const children = childCategories.filter(c => c.parent_id === parent.id);
-        children.forEach(child => {
-          if (!addedIds.has(child.id)) {
-            result.push(child);
-            addedIds.add(child.id);
-          }
-        });
-      });
+    // 親カテゴリの順序を定義（支出）
+    const expenseParentOrder = ['固定費', '変動費', '投資'];
+    // 親カテゴリの順序を定義（収入）
+    const incomeParentOrder = ['給料', '貯金'];
 
-    // 収入: 親カテゴリごとにグループ化
-    parentCategories
-      .filter(p => p.type === 'income')
-      .forEach(parent => {
-        if (!addedIds.has(parent.id)) {
-          result.push(parent);
-          addedIds.add(parent.id);
-        }
-        const children = childCategories.filter(c => c.parent_id === parent.id);
-        children.forEach(child => {
-          if (!addedIds.has(child.id)) {
-            result.push(child);
-            addedIds.add(child.id);
-          }
-        });
-      });
+    // 支出: 親カテゴリを定義された順序で処理
+    const expenseParents = parentCategories.filter(p => p.type === 'expense');
+    const sortedExpenseParents = expenseParents.sort((a, b) => {
+      const indexA = expenseParentOrder.indexOf(a.name);
+      const indexB = expenseParentOrder.indexOf(b.name);
+      // 定義された順序にない場合は最後に配置
+      if (indexA === -1 && indexB === -1) return a.name.localeCompare(b.name);
+      if (indexA === -1) return 1;
+      if (indexB === -1) return -1;
+      return indexA - indexB;
+    });
 
-    // ソート
-    result.sort((a, b) => {
-      if (a.type !== b.type) {
-        return a.type === 'expense' ? -1 : 1;
+    sortedExpenseParents.forEach(parent => {
+      if (!addedIds.has(parent.id)) {
+        result.push(parent);
+        addedIds.add(parent.id);
       }
-      return a.name.localeCompare(b.name);
+      // この親カテゴリの子カテゴリを取得してorder順にソート（orderが同じ場合は名前順）
+      const children = childCategories
+        .filter(c => c.parent_id === parent.id)
+        .sort((a, b) => {
+          const orderA = a.order ?? 0;
+          const orderB = b.order ?? 0;
+          if (orderA !== orderB) return orderA - orderB;
+          return a.name.localeCompare(b.name);
+        });
+      children.forEach(child => {
+        if (!addedIds.has(child.id)) {
+          result.push(child);
+          addedIds.add(child.id);
+        }
+      });
+    });
+
+    // 収入: 親カテゴリを定義された順序で処理
+    const incomeParents = parentCategories.filter(p => p.type === 'income');
+    const sortedIncomeParents = incomeParents.sort((a, b) => {
+      const indexA = incomeParentOrder.indexOf(a.name);
+      const indexB = incomeParentOrder.indexOf(b.name);
+      // 定義された順序にない場合は最後に配置
+      if (indexA === -1 && indexB === -1) return a.name.localeCompare(b.name);
+      if (indexA === -1) return 1;
+      if (indexB === -1) return -1;
+      return indexA - indexB;
+    });
+
+    sortedIncomeParents.forEach(parent => {
+      if (!addedIds.has(parent.id)) {
+        result.push(parent);
+        addedIds.add(parent.id);
+      }
+      // この親カテゴリの子カテゴリを取得してorder順にソート（orderが同じ場合は名前順）
+      const children = childCategories
+        .filter(c => c.parent_id === parent.id)
+        .sort((a, b) => {
+          const orderA = a.order ?? 0;
+          const orderB = b.order ?? 0;
+          if (orderA !== orderB) return orderA - orderB;
+          return a.name.localeCompare(b.name);
+        });
+      children.forEach(child => {
+        if (!addedIds.has(child.id)) {
+          result.push(child);
+          addedIds.add(child.id);
+        }
+      });
     });
 
     return result;
@@ -165,15 +197,20 @@ export default function CategoriesScreen() {
   };
 
   const refresh = useCallback(async () => {
+    if (!session?.user?.id) return;
     setLoading(true);
-    const { data, error } = await supabase.from('categories').select('*');
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .is('household_id', null);
     setLoading(false);
     if (error) {
       Alert.alert('取得に失敗しました', error.message);
       return;
     }
     setCategories((data ?? []) as Category[]);
-  }, []);
+  }, [session]);
 
   const resetForm = useCallback(() => {
     setName('');
@@ -200,24 +237,46 @@ export default function CategoriesScreen() {
       return;
     }
 
+    if (!session?.user?.id) {
+      Alert.alert('エラー', 'ログインが必要です');
+      return;
+    }
+
+    console.log('Saving category:', { name, type, parentId, editingId });
+    const selectedParent = categories.find(c => c.id === parentId);
+    console.log('Selected parent category:', selectedParent);
+
     setSaving(true);
     if (editingId) {
       const { error } = await supabase
         .from('categories')
         .update({ name, type, parent_id: parentId })
-        .eq('id', editingId);
+        .eq('id', editingId)
+        .eq('user_id', session.user.id)
+        .is('household_id', null);
       setSaving(false);
       if (error) {
         Alert.alert('更新に失敗しました', error.message);
         return;
       }
     } else {
-      const { error } = await supabase.from('categories').insert({
+      // 同じ親カテゴリの子カテゴリの最大orderを取得
+      const siblings = categories.filter(c => c.parent_id === parentId);
+      const maxOrder = siblings.length > 0
+        ? Math.max(...siblings.map(s => s.order ?? 0))
+        : -1;
+      const newOrder = maxOrder + 1;
+
+      const insertData = {
         name,
         type,
         parent_id: parentId,
-        user_id: session?.user?.id
-      });
+        order: newOrder,
+        user_id: session.user.id
+      };
+      console.log('Inserting category with data:', insertData);
+      const { data, error } = await supabase.from('categories').insert(insertData).select();
+      console.log('Insert result - data:', data, 'error:', error);
       setSaving(false);
       if (error) {
         Alert.alert('作成に失敗しました', error.message);
@@ -228,7 +287,7 @@ export default function CategoriesScreen() {
     refresh();
     // React Queryのキャッシュを無効化して、他の画面でもカテゴリが更新されるようにする
     queryClient.invalidateQueries({ queryKey: ['categories'] });
-  }, [name, type, parentId, editingId, session, resetForm, refresh, queryClient]);
+  }, [name, type, parentId, editingId, session, resetForm, refresh, queryClient, categories]);
 
   // 親カテゴリ（固定費、変動費、投資、給料、貯金）かどうかを判定
   const isParentCategory = useCallback((item: Category) => {
@@ -250,9 +309,49 @@ export default function CategoriesScreen() {
     setParentId(item.parent_id);
   }, [isParentCategory]);
 
+  const performDelete = useCallback(async (id: string) => {
+    console.log('performDelete called with id:', id);
+    if (!session?.user?.id) {
+      console.log('No session found');
+      Alert.alert('エラー', 'ログインが必要です');
+      return;
+    }
+    console.log('Deleting category with id:', id, 'user_id:', session.user.id);
+    try {
+      const { data, error } = await supabase
+        .from('categories')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', session.user.id)
+        .is('household_id', null)
+        .select();
+      console.log('Delete result - data:', data, 'error:', error);
+      if (error) {
+        console.error('Delete error:', error);
+        Alert.alert('削除に失敗しました', error.message);
+        return;
+      }
+      console.log('Delete successful, refreshing...');
+      await refresh();
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
+      if (editingId === id) resetForm();
+      console.log('Delete process completed');
+    } catch (err) {
+      console.error('Delete exception:', err);
+      Alert.alert('削除に失敗しました', err instanceof Error ? err.message : '不明なエラーが発生しました');
+    }
+  }, [session, refresh, queryClient, editingId, resetForm]);
+
   const onDelete = useCallback((id: string) => {
+    console.log('onDelete called with id:', id);
     const item = categories.find(c => c.id === id);
-    if (!item) return;
+    if (!item) {
+      console.log('Item not found for id:', id);
+      return;
+    }
+
+    console.log('Item found:', item);
+    console.log('isParentCategory:', isParentCategory(item));
 
     // 親カテゴリは削除不可
     if (isParentCategory(item)) {
@@ -261,24 +360,227 @@ export default function CategoriesScreen() {
       return;
     }
 
-    Alert.alert('削除確認', 'このカテゴリを削除しますか？', [
-      { text: 'キャンセル', style: 'cancel' },
-      {
-        text: '削除',
-        style: 'destructive',
-        onPress: async () => {
-          const { error } = await supabase.from('categories').delete().eq('id', id);
+    console.log('Showing delete confirmation dialog');
+
+    // Webプラットフォームではwindow.confirmを使用
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm('このカテゴリを削除しますか？');
+      if (confirmed) {
+        console.log('Delete confirmed in window.confirm, calling performDelete...');
+        performDelete(id);
+      } else {
+        console.log('Delete cancelled in window.confirm');
+      }
+    } else {
+      // ネイティブプラットフォームではAlert.alertを使用
+      Alert.alert('削除確認', 'このカテゴリを削除しますか？', [
+        { text: 'キャンセル', style: 'cancel', onPress: () => console.log('Delete cancelled') },
+        {
+          text: '削除',
+          style: 'destructive',
+          onPress: () => {
+            console.log('Delete button pressed in Alert, calling performDelete...');
+            performDelete(id);
+          },
+        },
+      ]);
+    }
+  }, [categories, isParentCategory, performDelete]);
+
+  const moveCategory = useCallback(async (id: string, direction: 'up' | 'down') => {
+    console.log('moveCategory called:', { id, direction });
+    if (!session?.user?.id) {
+      Alert.alert('エラー', 'ログインが必要です');
+      return;
+    }
+
+    const item = categories.find(c => c.id === id);
+    if (!item) {
+      console.log('Item not found:', id);
+      return;
+    }
+
+    console.log('Item found:', item);
+
+    // 親カテゴリは並び替え不可
+    if (isParentCategory(item)) {
+      Alert.alert('並び替え不可', '親カテゴリは並び替えできません');
+      return;
+    }
+
+    // 同じ親カテゴリの子カテゴリを取得（自分を含む）
+    let allSiblings = categories.filter(c => c.parent_id === item.parent_id);
+
+    // orderがnull/undefined、またはすべて同じ値の場合、初期化が必要
+    const orders = allSiblings.map(c => c.order).filter(o => o !== null && o !== undefined);
+    const hasNullOrder = allSiblings.some(c => c.order === null || c.order === undefined);
+    const allSameOrder = orders.length > 0 && new Set(orders).size === 1;
+
+    if (hasNullOrder || allSameOrder) {
+      console.log('Initializing order for categories...', { hasNullOrder, allSameOrder, orders });
+      // 名前順でソートしてから、0から始まる連番をorderとして設定
+      const sortedSiblings = [...allSiblings].sort((a, b) => a.name.localeCompare(b.name));
+
+      // すべてのカテゴリにorderを設定
+      try {
+        for (let index = 0; index < sortedSiblings.length; index++) {
+          const sibling = sortedSiblings[index];
+          const newOrder = index;
+          const { error } = await supabase
+            .from('categories')
+            .update({ order: newOrder })
+            .eq('id', sibling.id)
+            .eq('user_id', session.user.id)
+            .is('household_id', null);
           if (error) {
-            Alert.alert('削除に失敗しました', error.message);
+            console.error('Error initializing order for', sibling.name, error);
+            throw error;
+          }
+        }
+        console.log('Order initialization completed');
+        // 更新後に再取得
+        await refresh();
+        // 再取得したカテゴリを使用
+        const { data: updatedCategories } = await supabase
+          .from('categories')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .is('household_id', null);
+
+        if (updatedCategories) {
+          const updatedData = updatedCategories as Category[];
+          setCategories(updatedData);
+          // 更新されたカテゴリから再度取得
+          const updatedItem = updatedData.find(c => c.id === id);
+          if (updatedItem) {
+            allSiblings = updatedData.filter(c => c.parent_id === updatedItem.parent_id);
+          } else {
+            console.error('Updated item not found');
             return;
           }
-          await refresh();
-          queryClient.invalidateQueries({ queryKey: ['categories'] });
-          if (editingId === id) resetForm();
-        },
-      },
-    ]);
-  }, [categories, editingId, isParentCategory, refresh, resetForm, queryClient]);
+        }
+      } catch (error) {
+        console.error('Error initializing orders:', error);
+        Alert.alert('エラー', '順序の初期化に失敗しました');
+        return;
+      }
+    }
+
+    // orderでソート
+    allSiblings = allSiblings.sort((a, b) => {
+      const orderA = a.order ?? 0;
+      const orderB = b.order ?? 0;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name);
+    });
+
+    console.log('All siblings:', allSiblings.map(s => ({ name: s.name, order: s.order })));
+
+    const currentIndex = allSiblings.findIndex(s => s.id === id);
+    console.log('Current index:', currentIndex);
+
+    if (direction === 'up') {
+      if (currentIndex <= 0) {
+        Alert.alert('これ以上上に移動できません');
+        return;
+      }
+      const targetItem = allSiblings[currentIndex - 1];
+      const targetOrder = targetItem.order ?? 0;
+      const currentOrder = item.order ?? 0;
+
+      console.log('Moving up - swapping with:', {
+        targetItem: targetItem.name,
+        targetOrder,
+        currentOrder,
+        targetItemOrder: targetItem.order,
+        currentItemOrder: item.order
+      });
+
+      // 2つのカテゴリのorderを入れ替え
+      try {
+        const { error: error1 } = await supabase
+          .from('categories')
+          .update({ order: targetOrder })
+          .eq('id', id)
+          .eq('user_id', session.user.id)
+          .is('household_id', null);
+
+        if (error1) {
+          console.error('Error updating current item:', error1);
+          throw error1;
+        }
+
+        const { error: error2 } = await supabase
+          .from('categories')
+          .update({ order: currentOrder })
+          .eq('id', targetItem.id)
+          .eq('user_id', session.user.id)
+          .is('household_id', null);
+
+        if (error2) {
+          console.error('Error updating target item:', error2);
+          throw error2;
+        }
+
+        console.log('Move successful');
+        await refresh();
+        queryClient.invalidateQueries({ queryKey: ['categories'] });
+      } catch (error) {
+        console.error('Move error:', error);
+        Alert.alert('並び替えに失敗しました', error instanceof Error ? error.message : '不明なエラー');
+      }
+    } else {
+      if (currentIndex >= allSiblings.length - 1) {
+        Alert.alert('これ以上下に移動できません');
+        return;
+      }
+      const targetItem = allSiblings[currentIndex + 1];
+      const targetOrder = targetItem.order ?? 0;
+      const currentOrder = item.order ?? 0;
+
+      console.log('Moving down - swapping with:', {
+        targetItem: targetItem.name,
+        targetOrder,
+        currentOrder,
+        targetItemOrder: targetItem.order,
+        currentItemOrder: item.order
+      });
+
+      // 2つのカテゴリのorderを入れ替え
+      try {
+        const { error: error1 } = await supabase
+          .from('categories')
+          .update({ order: targetOrder })
+          .eq('id', id)
+          .eq('user_id', session.user.id)
+          .is('household_id', null);
+
+        if (error1) {
+          console.error('Error updating current item:', error1);
+          throw error1;
+        }
+
+        const { error: error2 } = await supabase
+          .from('categories')
+          .update({ order: currentOrder })
+          .eq('id', targetItem.id)
+          .eq('user_id', session.user.id)
+          .is('household_id', null);
+
+        if (error2) {
+          console.error('Error updating target item:', error2);
+          throw error2;
+        }
+
+        console.log('Move successful');
+        await refresh();
+        queryClient.invalidateQueries({ queryKey: ['categories'] });
+      } catch (error) {
+        console.error('Move error:', error);
+        Alert.alert('並び替えに失敗しました', error instanceof Error ? error.message : '不明なエラー');
+      }
+    }
+  }, [categories, isParentCategory, session, refresh, queryClient]);
 
   const renderHeader = useMemo(
     () => (
@@ -318,7 +620,10 @@ export default function CategoriesScreen() {
                   <TouchableOpacity
                     key={parent.id}
                     style={[styles.chip, parentId === parent.id && styles.chipActive]}
-                    onPress={() => setParentId(parent.id)}>
+                    onPress={() => {
+                      console.log('Parent category selected:', parent.name, 'id:', parent.id);
+                      setParentId(parent.id);
+                    }}>
                     <Text style={parentId === parent.id ? styles.chipTextActive : styles.chipText}>
                       {parent.name}
                     </Text>
@@ -345,24 +650,22 @@ export default function CategoriesScreen() {
         </View>
       </>
     ),
-    [name, type, parentId, saving, editingId, loading, currentParentCategories, save, resetForm]
+    [name, type, parentId, saving, editingId, loading, currentParentCategories, save, resetForm, refresh]
   );
 
-  const renderItem = useCallback(({ item }: { item: Category }) => {
+  const renderItem = useCallback(({ item, index }: { item: Category; index: number }) => {
     const isChild = item.parent_id !== null;
     const parentName = isChild ? categories.find(c => c.id === item.parent_id)?.name : null;
 
-    const handleEdit = () => {
-      onEdit(item);
-    };
-
-    const handleDelete = () => {
-      onDelete(item.id);
-    };
+    // 同じ親カテゴリの子カテゴリを取得して順序を確認
+    const siblings = sorted.filter(c => c.parent_id === item.parent_id);
+    const currentIndex = siblings.findIndex(s => s.id === item.id);
+    const canMoveUp = !isParentCategory(item) && currentIndex > 0;
+    const canMoveDown = !isParentCategory(item) && currentIndex < siblings.length - 1;
 
     return (
       <View style={[styles.item, isChild && styles.childItem]}>
-        <View>
+        <View style={styles.itemLeft}>
           <Text style={styles.itemName}>
             {isChild ? `  └ ${item.name}` : item.name}
           </Text>
@@ -374,10 +677,24 @@ export default function CategoriesScreen() {
         <View style={styles.itemActions}>
           {!isParentCategory(item) && (
             <>
-              <TouchableOpacity onPress={handleEdit} style={styles.itemButton}>
+              <View style={styles.orderButtons}>
+                <TouchableOpacity
+                  onPress={() => moveCategory(item.id, 'up')}
+                  style={[styles.orderButton, !canMoveUp && styles.orderButtonDisabled]}
+                  disabled={!canMoveUp}>
+                  <Text style={[styles.orderButtonText, !canMoveUp && styles.orderButtonTextDisabled]}>↑</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => moveCategory(item.id, 'down')}
+                  style={[styles.orderButton, !canMoveDown && styles.orderButtonDisabled]}
+                  disabled={!canMoveDown}>
+                  <Text style={[styles.orderButtonText, !canMoveDown && styles.orderButtonTextDisabled]}>↓</Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity onPress={() => onEdit(item)} style={styles.itemButton}>
                 <Text>編集</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleDelete} style={[styles.itemButton, styles.deleteButton]}>
+              <TouchableOpacity onPress={() => onDelete(item.id)} style={[styles.itemButton, styles.deleteButton]}>
                 <Text style={styles.deleteText}>削除</Text>
               </TouchableOpacity>
             </>
@@ -388,7 +705,7 @@ export default function CategoriesScreen() {
         </View>
       </View>
     );
-  }, [categories, isParentCategory, onEdit, onDelete]);
+  }, [categories, sorted, isParentCategory, onEdit, onDelete, moveCategory]);
 
   return (
     <KeyboardAvoidingView
@@ -401,7 +718,7 @@ export default function CategoriesScreen() {
         ListHeaderComponent={renderHeader}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="none"
-        renderItem={renderItem}
+        renderItem={({ item, index }) => renderItem({ item, index })}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text>カテゴリがありません。追加してください。</Text>
@@ -523,9 +840,40 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 4,
   },
+  itemLeft: {
+    flex: 1,
+  },
   itemActions: {
     flexDirection: 'row',
     gap: 8,
+    alignItems: 'center',
+  },
+  orderButtons: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  orderButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#f3f4f6',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    minWidth: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orderButtonDisabled: {
+    opacity: 0.3,
+    backgroundColor: '#f9fafb',
+  },
+  orderButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  orderButtonTextDisabled: {
+    color: '#9ca3af',
   },
   itemButton: {
     paddingHorizontal: 10,

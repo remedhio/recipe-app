@@ -197,7 +197,15 @@ export default function EntriesScreen() {
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, ...entry }: Partial<Entry> & { id: string }) => {
-      const { error } = await supabase.from('entries').update(entry).eq('id', id);
+      if (!session?.user?.id) {
+        throw new Error('ログインが必要です');
+      }
+      const { error } = await supabase
+        .from('entries')
+        .update(entry)
+        .eq('id', id)
+        .eq('user_id', session.user.id)
+        .is('household_id', null);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -211,7 +219,15 @@ export default function EntriesScreen() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('entries').delete().eq('id', id);
+      if (!session?.user?.id) {
+        throw new Error('ログインが必要です');
+      }
+      const { error } = await supabase
+        .from('entries')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', session.user.id)
+        .is('household_id', null);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -336,18 +352,35 @@ export default function EntriesScreen() {
     setIsFormExpanded(true);
   };
 
+  const performDelete = useCallback((id: string) => {
+    if (!session?.user?.id) {
+      Alert.alert('エラー', 'ログインが必要です');
+      return;
+    }
+    deleteMutation.mutate(id);
+    if (editingId === id) resetForm();
+  }, [session, deleteMutation, editingId, resetForm]);
+
   const onDelete = (id: string) => {
-    Alert.alert('削除確認', 'この記録を削除しますか？', [
-      { text: 'キャンセル', style: 'cancel' },
-      {
-        text: '削除',
-        style: 'destructive',
-        onPress: () => {
-          deleteMutation.mutate(id);
-          if (editingId === id) resetForm();
+    // Webプラットフォームではwindow.confirmを使用
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm('この記録を削除しますか？');
+      if (confirmed) {
+        performDelete(id);
+      }
+    } else {
+      // ネイティブプラットフォームではAlert.alertを使用
+      Alert.alert('削除確認', 'この記録を削除しますか？', [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: '削除',
+          style: 'destructive',
+          onPress: () => {
+            performDelete(id);
+          },
         },
-      },
-    ]);
+      ]);
+    }
   };
 
   const formatDate = (date: Date) => {
@@ -1032,7 +1065,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fafafa',
   },
   formContainer: {
-    padding: 20,
+    paddingHorizontal: 16,
+    paddingTop: 16,
     paddingBottom: 16,
     backgroundColor: '#ffffff',
     borderBottomWidth: 1,
@@ -1084,8 +1118,9 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
   listContent: {
-    padding: 20,
-    paddingBottom: 40,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 32,
   },
   title: {
     fontSize: 24,
@@ -1472,8 +1507,8 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#e5e7eb',
-    borderRadius: 16,
-    marginBottom: 12,
+    borderRadius: 12,
+    marginBottom: 10,
     backgroundColor: '#ffffff',
     shadowColor: '#000',
     shadowOffset: {
@@ -1481,8 +1516,8 @@ const styles = StyleSheet.create({
       height: 1,
     },
     shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowRadius: 3,
+    elevation: 1,
   },
   itemLeft: {
     flex: 1,
@@ -1547,16 +1582,20 @@ const styles = StyleSheet.create({
   emptyContainer: {
     flexGrow: 1,
     justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 40,
   },
   empty: {
     alignItems: 'center',
-    padding: 40,
-    gap: 12,
+    justifyContent: 'center',
+    padding: 24,
   },
   emptyText: {
     fontSize: 15,
-    color: '#6b7280',
+    color: '#9ca3af',
     fontWeight: '500',
+    textAlign: 'center',
+    lineHeight: 22,
   },
   buttonDisabled: {
     opacity: 0.6,
