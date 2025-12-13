@@ -1,8 +1,9 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
-import { Alert, FlatList, StyleSheet, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform as RNPlatform, ScrollView, Keyboard, TouchableWithoutFeedback } from 'react-native';
+import { Alert, FlatList, StyleSheet, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform as RNPlatform, ScrollView, Keyboard, TouchableWithoutFeedback, Modal, Dimensions } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Platform } from 'react-native';
+import { BarChart } from 'react-native-chart-kit';
 
 import { Text, View } from '@/components/Themed';
 import { supabase } from '@/lib/supabaseClient';
@@ -43,6 +44,14 @@ export default function EntriesScreen() {
   const amountInputRef = useRef<any>(null);
   const noteInputRef = useRef<any>(null);
 
+  // グラフ表示用のstate
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [selectedCategoryName, setSelectedCategoryName] = useState<string | null>(null);
+  const [showGraphModal, setShowGraphModal] = useState(false);
+
+  // 親カテゴリごとのタブ表示用のstate
+  const [selectedParentTab, setSelectedParentTab] = useState<string | null>(null);
+
   // 固定費の期間指定用
   const [isFixedExpense, setIsFixedExpense] = useState(false);
   const [startDate, setStartDate] = useState(new Date());
@@ -66,6 +75,18 @@ export default function EntriesScreen() {
     [categories, type]
   );
 
+  // 支出の親カテゴリのみ（固定費、変動費、投資）
+  const expenseParentCategories = useMemo(
+    () => categories.filter((c) => c.type === 'expense' && c.parent_id === null && ['固定費', '変動費', '投資'].includes(c.name)),
+    [categories]
+  );
+
+  // 収入の親カテゴリのみ（給料、貯金）
+  const incomeParentCategories = useMemo(
+    () => categories.filter((c) => c.type === 'income' && c.parent_id === null && ['給料', '貯金'].includes(c.name)),
+    [categories]
+  );
+
   const childCategories = useMemo(
     () => categories.filter((c) => c.type === type && c.parent_id !== null),
     [categories, type]
@@ -82,8 +103,11 @@ export default function EntriesScreen() {
     if (type === 'expense' && selectedParentId) {
       return childCategories.filter((c) => c.parent_id === selectedParentId);
     }
-    // 収入カテゴリまたは親カテゴリ未選択の場合は全て表示（後方互換性のため）
-    return type === 'income' ? categories.filter((c) => c.type === type && c.parent_id === null) : [];
+    if (type === 'income' && selectedParentId) {
+      return childCategories.filter((c) => c.parent_id === selectedParentId);
+    }
+    // 親カテゴリ未選択の場合は空配列
+    return [];
   }, [categories, type, selectedParentId, childCategories]);
 
   // 選択されたカテゴリが固定費かどうかを判定
@@ -119,6 +143,42 @@ export default function EntriesScreen() {
       return (data ?? []) as Entry[];
     },
     enabled: !!session,
+  });
+
+  // カテゴリごとの月毎の集計データを取得（全期間）
+  const { data: categoryMonthlyData = [] } = useQuery<Array<{ month: string; total: number }>>({
+    queryKey: ['categoryMonthlyData', selectedCategoryId],
+    queryFn: async () => {
+      if (!selectedCategoryId || !session) return [];
+
+      // 全てのエントリーを取得
+      const { data, error } = await supabase
+        .from('entries')
+        .select('amount, happened_on')
+        .eq('category_id', selectedCategoryId)
+        .eq('type', 'expense')
+        .order('happened_on', { ascending: true });
+
+      if (error) throw error;
+      if (!data || data.length === 0) return [];
+
+      // 月ごとに集計
+      const monthlyTotals = new Map<string, number>();
+
+      data.forEach((entry) => {
+        const date = new Date(entry.happened_on);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        monthlyTotals.set(monthKey, (monthlyTotals.get(monthKey) || 0) + entry.amount);
+      });
+
+      // 月順にソートして配列に変換
+      const months = Array.from(monthlyTotals.entries())
+        .map(([month, total]) => ({ month, total }))
+        .sort((a, b) => a.month.localeCompare(b.month));
+
+      return months;
+    },
+    enabled: !!selectedCategoryId && !!session,
   });
 
   const createMutation = useMutation({
@@ -298,6 +358,14 @@ export default function EntriesScreen() {
     return `¥${amount.toLocaleString()}`;
   };
 
+  // カテゴリをクリックしてグラフを表示
+  const onCategoryPress = (categoryId: string | null, categoryName: string | null) => {
+    if (!categoryId) return;
+    setSelectedCategoryId(categoryId);
+    setSelectedCategoryName(categoryName);
+    setShowGraphModal(true);
+  };
+
   const totalIncome = useMemo(
     () => entries.filter((e) => e.type === 'income').reduce((sum, e) => sum + e.amount, 0),
     [entries]
@@ -306,6 +374,81 @@ export default function EntriesScreen() {
     () => entries.filter((e) => e.type === 'expense').reduce((sum, e) => sum + e.amount, 0),
     [entries]
   );
+
+  // 親カテゴリごとの集計データ（支出）
+  const expenseParentCategorySummary = useMemo(() => {
+    const summary: Record<string, { name: string; total: number; children: Record<string, number> }> = {};
+
+    expenseParentCategories.forEach(parent => {
+      summary[parent.id] = {
+        name: parent.name,
+        total: 0,
+        children: {},
+      };
+    });
+
+    entries
+      .filter(e => e.type === 'expense' && e.category_id)
+      .forEach(entry => {
+        const category = categories.find(c => c.id === entry.category_id);
+        if (category?.parent_id && summary[category.parent_id]) {
+          summary[category.parent_id].total += entry.amount;
+          const childName = category.name;
+          summary[category.parent_id].children[childName] =
+            (summary[category.parent_id].children[childName] || 0) + entry.amount;
+        }
+      });
+
+    return summary;
+  }, [entries, categories, expenseParentCategories]);
+
+  // 親カテゴリごとの集計データ（収入）
+  const incomeParentCategorySummary = useMemo(() => {
+    const summary: Record<string, { name: string; total: number; children: Record<string, number> }> = {};
+
+    incomeParentCategories.forEach(parent => {
+      summary[parent.id] = {
+        name: parent.name,
+        total: 0,
+        children: {},
+      };
+    });
+
+    entries
+      .filter(e => e.type === 'income' && e.category_id)
+      .forEach(entry => {
+        const category = categories.find(c => c.id === entry.category_id);
+        if (category?.parent_id && summary[category.parent_id]) {
+          summary[category.parent_id].total += entry.amount;
+          const childName = category.name;
+          summary[category.parent_id].children[childName] =
+            (summary[category.parent_id].children[childName] || 0) + entry.amount;
+        }
+      });
+
+    return summary;
+  }, [entries, categories, incomeParentCategories]);
+
+  // 現在のフィルタータイプに応じた親カテゴリと集計データ
+  const currentParentCategories = filterType === 'expense' ? expenseParentCategories : filterType === 'income' ? incomeParentCategories : [];
+  const currentParentCategorySummary = filterType === 'expense' ? expenseParentCategorySummary : filterType === 'income' ? incomeParentCategorySummary : {};
+
+  // 親カテゴリタブに基づいてエントリーをフィルタリング
+  const filteredEntries = useMemo(() => {
+    if (!selectedParentTab) {
+      return entries;
+    }
+
+    // 選択された親カテゴリの子カテゴリIDを取得
+    const childCategoryIds = categories
+      .filter(c => c.parent_id === selectedParentTab)
+      .map(c => c.id);
+
+    // 子カテゴリに属するエントリーのみを返す
+    return entries.filter(entry =>
+      entry.category_id && childCategoryIds.includes(entry.category_id)
+    );
+  }, [entries, selectedParentTab, categories]);
 
   const renderHeader = useCallback(() => (
     <>
@@ -328,21 +471,77 @@ export default function EntriesScreen() {
         </View>
       </View>
 
+      {/* 親カテゴリごとのタブ（支出または収入が選択されている時のみ表示） */}
+      {currentParentCategories.length > 0 && (filterType === 'expense' || filterType === 'income') && (
+        <View style={styles.parentTabs}>
+          <TouchableOpacity
+            style={[styles.parentTab, selectedParentTab === null && styles.parentTabActive]}
+            onPress={() => setSelectedParentTab(null)}>
+            <Text style={[styles.parentTabText, selectedParentTab === null && styles.parentTabTextActive]}>
+              すべて
+            </Text>
+          </TouchableOpacity>
+          {currentParentCategories.map((parent) => (
+            <TouchableOpacity
+              key={parent.id}
+              style={[styles.parentTab, selectedParentTab === parent.id && styles.parentTabActive]}
+              onPress={() => setSelectedParentTab(parent.id)}>
+              <Text style={[styles.parentTabText, selectedParentTab === parent.id && styles.parentTabTextActive]}>
+                {parent.name}
+              </Text>
+              {selectedParentTab === parent.id && currentParentCategorySummary[parent.id] && (
+                <Text style={styles.parentTabAmount}>
+                  {formatCurrency(currentParentCategorySummary[parent.id].total)}
+                </Text>
+              )}
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* 親カテゴリごとの集計表示 */}
+      {selectedParentTab && currentParentCategorySummary[selectedParentTab] && (
+        <View style={styles.parentSummary}>
+          <Text style={styles.parentSummaryTitle}>
+            {currentParentCategorySummary[selectedParentTab].name}の合計: {formatCurrency(currentParentCategorySummary[selectedParentTab].total)}
+          </Text>
+          <View style={styles.childrenSummary}>
+            {Object.entries(currentParentCategorySummary[selectedParentTab].children)
+              .sort(([, a], [, b]) => b - a)
+              .map(([childName, amount]) => (
+                <View key={childName} style={styles.childSummaryRow}>
+                  <Text style={styles.childSummaryName}>{childName}</Text>
+                  <Text style={styles.childSummaryAmount}>{formatCurrency(amount)}</Text>
+                </View>
+              ))}
+          </View>
+        </View>
+      )}
+
       <View style={styles.filters}>
         <View style={styles.filterRow}>
           <TouchableOpacity
             style={[styles.filterChip, filterType === 'all' && styles.filterChipActive]}
-            onPress={() => setFilterType('all')}>
+            onPress={() => {
+              setFilterType('all');
+              setSelectedParentTab(null);
+            }}>
             <Text style={filterType === 'all' ? styles.filterChipTextActive : styles.filterChipText}>すべて</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterChip, filterType === 'income' && styles.filterChipActive]}
-            onPress={() => setFilterType('income')}>
+            onPress={() => {
+              setFilterType('income');
+              setSelectedParentTab(null);
+            }}>
             <Text style={filterType === 'income' ? styles.filterChipTextActive : styles.filterChipText}>収入</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterChip, filterType === 'expense' && styles.filterChipActive]}
-            onPress={() => setFilterType('expense')}>
+            onPress={() => {
+              setFilterType('expense');
+              setSelectedParentTab(null);
+            }}>
             <Text style={filterType === 'expense' ? styles.filterChipTextActive : styles.filterChipText}>支出</Text>
           </TouchableOpacity>
         </View>
@@ -567,7 +766,7 @@ export default function EntriesScreen() {
                 blurOnSubmit={true}
               />
 
-              {type === 'expense' && parentCategories.length > 0 && !selectedParentId && (
+              {(type === 'expense' || type === 'income') && parentCategories.length > 0 && !selectedParentId && (
                 <>
                   <Text style={styles.categoryLabel}>親カテゴリを選択</Text>
                   <FlatList
@@ -587,7 +786,7 @@ export default function EntriesScreen() {
                 </>
               )}
 
-              {type === 'expense' && selectedParentId && (
+              {(type === 'expense' || type === 'income') && selectedParentId && (
                 <>
                   <View style={styles.categoryHeader}>
                     <TouchableOpacity onPress={() => {
@@ -618,26 +817,6 @@ export default function EntriesScreen() {
                     ListEmptyComponent={<Text style={styles.emptyCategoryText}>カテゴリがありません</Text>}
                   />
                 </>
-              )}
-
-              {type === 'income' && (
-                <FlatList
-                  data={filteredCategories}
-                  keyExtractor={(item) => item.id}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.categoryList}
-                  renderItem={({ item }) => (
-                    <TouchableOpacity
-                      style={[styles.categoryChip, categoryId === item.id && styles.categoryChipActive]}
-                      onPress={() => setCategoryId(item.id)}>
-                      <Text style={categoryId === item.id ? styles.categoryChipTextActive : styles.categoryChipText}>
-                        {item.name}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                  ListEmptyComponent={<Text style={styles.emptyCategoryText}>カテゴリがありません</Text>}
-                />
               )}
 
               <TextInput
@@ -683,7 +862,7 @@ export default function EntriesScreen() {
         </View>
       ) : (
         <FlatList
-          data={entries}
+          data={filteredEntries}
           keyExtractor={(item) => item.id}
           ListHeaderComponent={renderHeader}
           keyboardShouldPersistTaps="handled"
@@ -693,7 +872,9 @@ export default function EntriesScreen() {
             <View style={styles.item}>
               <View style={styles.itemLeft}>
                 <Text style={styles.itemDate}>{item.happened_on}</Text>
-                <Text style={styles.itemCategory}>{item.categories?.name || '未分類'}</Text>
+                <TouchableOpacity onPress={() => onCategoryPress(item.category_id, item.categories?.name || null)}>
+                  <Text style={[styles.itemCategory, styles.categoryLink]}>{item.categories?.name || '未分類'}</Text>
+                </TouchableOpacity>
                 {item.note && <Text style={styles.itemNote}>{item.note}</Text>}
               </View>
               <View style={styles.itemRight}>
@@ -717,9 +898,100 @@ export default function EntriesScreen() {
               <Text style={styles.emptyText}>記録がありません。追加してください。</Text>
             </View>
           }
-          contentContainerStyle={entries.length === 0 ? styles.emptyContainer : styles.listContent}
+          contentContainerStyle={filteredEntries.length === 0 ? styles.emptyContainer : styles.listContent}
         />
       )}
+
+      {/* グラフモーダル */}
+      <Modal
+        visible={showGraphModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowGraphModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {selectedCategoryName || 'カテゴリ'}の月毎の支出
+              </Text>
+              <TouchableOpacity onPress={() => setShowGraphModal(false)}>
+                <Text style={styles.modalCloseButton}>×</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalBody}>
+              {categoryMonthlyData.length > 0 ? (
+                <View style={styles.chartContainer}>
+                  <BarChart
+                    data={{
+                      labels: categoryMonthlyData.map(d => {
+                        const [year, month] = d.month.split('-');
+                        return `${month}/${year.slice(2)}`;
+                      }),
+                      datasets: [
+                        {
+                          data: categoryMonthlyData.map(d => d.total),
+                        },
+                      ],
+                    }}
+                    width={Dimensions.get('window').width - 80}
+                    height={350}
+                    yAxisLabel="¥"
+                    yAxisSuffix=""
+                    fromZero={true}
+                    yAxisInterval={1}
+                    formatYLabel={(value) => {
+                      const num = parseFloat(value);
+                      if (num >= 10000) {
+                        return `${(num / 10000).toFixed(1)}万`;
+                      }
+                      return Math.round(num).toString();
+                    }}
+                    chartConfig={{
+                      backgroundColor: '#ffffff',
+                      backgroundGradientFrom: '#ffffff',
+                      backgroundGradientTo: '#ffffff',
+                      decimalPlaces: 0,
+                      color: (opacity = 1) => `rgba(34, 197, 94, ${opacity})`,
+                      labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+                      style: {
+                        borderRadius: 16,
+                      },
+                      barPercentage: 0.7,
+                      propsForLabels: {
+                        fontSize: 10,
+                      },
+                    }}
+                    style={{
+                      marginVertical: 8,
+                      borderRadius: 16,
+                    }}
+                    showValuesOnTopOfBars={true}
+                    verticalLabelRotation={0}
+                  />
+                  <View style={styles.chartSummary}>
+                    {categoryMonthlyData.map((d, index) => (
+                      <View key={index} style={styles.summaryRow}>
+                        <Text style={styles.summaryMonth}>
+                          {d.month.replace('-', '年').replace('-', '月')}月
+                        </Text>
+                        <Text style={styles.summaryAmount}>
+                          {formatCurrency(d.total)}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.emptyChart}>
+                  <Text style={styles.emptyChartText}>
+                    このカテゴリのデータがありません
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -873,6 +1145,78 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#374151',
     marginTop: 4,
+  },
+  parentTabs: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  parentTab: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+  },
+  parentTabActive: {
+    backgroundColor: '#3b82f6',
+    borderColor: '#3b82f6',
+  },
+  parentTabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6b7280',
+  },
+  parentTabTextActive: {
+    color: '#ffffff',
+  },
+  parentTabAmount: {
+    fontSize: 11,
+    color: '#ffffff',
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  parentSummary: {
+    backgroundColor: '#f9fafb',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  parentSummaryTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginBottom: 12,
+  },
+  childrenSummary: {
+    gap: 8,
+  },
+  childSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  childSummaryName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  childSummaryAmount: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#22c55e',
   },
   formScrollView: {
     flex: 1,
@@ -1120,6 +1464,10 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     letterSpacing: -0.2,
   },
+  categoryLink: {
+    color: '#2f95dc',
+    textDecorationLine: 'underline',
+  },
   itemNote: {
     fontSize: 13,
     color: '#6b7280',
@@ -1176,5 +1524,76 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    width: '90%',
+    maxHeight: '80%',
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  modalCloseButton: {
+    fontSize: 32,
+    color: '#9ca3af',
+    fontWeight: '300',
+    lineHeight: 32,
+  },
+  modalBody: {
+    flex: 1,
+  },
+  chartContainer: {
+    alignItems: 'center',
+  },
+  chartSummary: {
+    marginTop: 20,
+    width: '100%',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#f9fafb',
+    borderRadius: 10,
+  },
+  summaryMonth: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  summaryAmount: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#22c55e',
+  },
+  emptyChart: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyChartText: {
+    fontSize: 16,
+    color: '#9ca3af',
   },
 });

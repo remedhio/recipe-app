@@ -64,6 +64,8 @@ export default function CategoriesScreen() {
       refresh();
       // 支出の親カテゴリ（固定費、変動費、投資）が存在しない場合は作成
       ensureExpenseParentCategories();
+      // 収入の親カテゴリ（給料、貯金）が存在しない場合は作成
+      ensureIncomeParentCategories();
     }
   }, [session]);
 
@@ -86,6 +88,34 @@ export default function CategoriesScreen() {
       const newCategories = missingNames.map(name => ({
         name,
         type: 'expense' as const,
+        user_id: session.user.id,
+        parent_id: null,
+      }));
+
+      await supabase.from('categories').insert(newCategories);
+      refresh();
+    }
+  };
+
+  // 収入の親カテゴリ（給料、貯金）を確保
+  const ensureIncomeParentCategories = async () => {
+    if (!session?.user?.id) return;
+
+    const parentCategoryNames = ['給料', '貯金'];
+    const { data: existingParents } = await supabase
+      .from('categories')
+      .select('name')
+      .eq('user_id', session.user.id)
+      .eq('type', 'income')
+      .is('parent_id', null);
+
+    const existingNames = (existingParents || []).map(c => c.name);
+    const missingNames = parentCategoryNames.filter(name => !existingNames.includes(name));
+
+    if (missingNames.length > 0) {
+      const newCategories = missingNames.map(name => ({
+        name,
+        type: 'income' as const,
         user_id: session.user.id,
         parent_id: null,
       }));
@@ -125,6 +155,12 @@ export default function CategoriesScreen() {
       return;
     }
 
+    // 収入カテゴリで親カテゴリが選択されていない場合はエラー
+    if (type === 'income' && !parentId) {
+      Alert.alert('親カテゴリを選択してください', '収入カテゴリは「給料」「貯金」のいずれかを選択してください');
+      return;
+    }
+
     setSaving(true);
     if (editingId) {
       const { error } = await supabase
@@ -155,7 +191,20 @@ export default function CategoriesScreen() {
     queryClient.invalidateQueries({ queryKey: ['categories'] });
   };
 
+  // 親カテゴリ（固定費、変動費、投資、給料、貯金）かどうかを判定
+  const isParentCategory = (item: Category) => {
+    if (item.parent_id !== null) return false;
+    if (item.type === 'expense' && ['固定費', '変動費', '投資'].includes(item.name)) return true;
+    if (item.type === 'income' && ['給料', '貯金'].includes(item.name)) return true;
+    return false;
+  };
+
   const onEdit = (item: Category) => {
+    // 親カテゴリは編集不可
+    if (isParentCategory(item)) {
+      Alert.alert('編集不可', '親カテゴリ（固定費、変動費、投資）は編集できません');
+      return;
+    }
     setEditingId(item.id);
     setName(item.name);
     setType(item.type);
@@ -163,6 +212,16 @@ export default function CategoriesScreen() {
   };
 
   const onDelete = async (id: string) => {
+    const item = categories.find(c => c.id === id);
+    if (!item) return;
+
+    // 親カテゴリは削除不可
+    if (isParentCategory(item)) {
+      const categoryType = item.type === 'expense' ? '支出' : '収入';
+      Alert.alert('削除不可', `親カテゴリ（${categoryType}）は削除できません`);
+      return;
+    }
+
     Alert.alert('削除確認', 'このカテゴリを削除しますか？', [
       { text: 'キャンセル', style: 'cancel' },
       {
@@ -211,7 +270,7 @@ export default function CategoriesScreen() {
               <Text style={type === 'income' ? styles.chipTextActive : styles.chipText}>収入</Text>
             </TouchableOpacity>
           </View>
-          {type === 'expense' && (
+          {(type === 'expense' || type === 'income') && (
             <View>
               <Text style={styles.label}>親カテゴリ</Text>
               <View style={styles.parentCategoryRow}>
@@ -276,12 +335,19 @@ export default function CategoriesScreen() {
                 </Text>
               </View>
               <View style={styles.itemActions}>
-                <TouchableOpacity onPress={() => onEdit(item)} style={styles.itemButton}>
-                  <Text>編集</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => onDelete(item.id)} style={[styles.itemButton, styles.deleteButton]}>
-                  <Text style={styles.deleteText}>削除</Text>
-                </TouchableOpacity>
+                {!isParentCategory(item) && (
+                  <>
+                    <TouchableOpacity onPress={() => onEdit(item)} style={styles.itemButton}>
+                      <Text>編集</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => onDelete(item.id)} style={[styles.itemButton, styles.deleteButton]}>
+                      <Text style={styles.deleteText}>削除</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+                {isParentCategory(item) && (
+                  <Text style={styles.disabledText}>編集・削除不可</Text>
+                )}
               </View>
             </View>
           );
@@ -423,6 +489,11 @@ const styles = StyleSheet.create({
   deleteText: {
     color: '#c00',
     fontWeight: '600',
+  },
+  disabledText: {
+    color: '#9ca3af',
+    fontSize: 12,
+    fontStyle: 'italic',
   },
   emptyContainer: {
     flexGrow: 1,
