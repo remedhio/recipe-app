@@ -11,6 +11,7 @@ type Category = {
   name: string;
   type: 'income' | 'expense';
   color: string | null;
+  parent_id: string | null;
   created_at: string;
 };
 
@@ -22,19 +23,77 @@ export default function CategoriesScreen() {
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
   const [type, setType] = useState<'income' | 'expense'>('expense');
+  const [parentId, setParentId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const sorted = useMemo(
-    () =>
-      [...categories].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+  // 親カテゴリと子カテゴリを分離
+  const parentCategories = useMemo(
+    () => categories.filter(c => c.type === 'expense' && c.parent_id === null),
     [categories]
   );
+
+  const childCategories = useMemo(
+    () => categories.filter(c => c.parent_id !== null),
+    [categories]
+  );
+
+  const incomeCategories = useMemo(
+    () => categories.filter(c => c.type === 'income'),
+    [categories]
+  );
+
+  // 階層構造でソート（親カテゴリ → その子カテゴリ）
+  const sorted = useMemo(() => {
+    const result: Category[] = [];
+
+    // 支出: 親カテゴリごとにグループ化
+    parentCategories.forEach(parent => {
+      result.push(parent);
+      const children = childCategories.filter(c => c.parent_id === parent.id);
+      result.push(...children.sort((a, b) => a.name.localeCompare(b.name)));
+    });
+
+    // 収入カテゴリ
+    result.push(...incomeCategories.sort((a, b) => a.name.localeCompare(b.name)));
+
+    return result;
+  }, [parentCategories, childCategories, incomeCategories]);
 
   useEffect(() => {
     if (session) {
       refresh();
+      // 支出の親カテゴリ（固定費、変動費、投資）が存在しない場合は作成
+      ensureExpenseParentCategories();
     }
   }, [session]);
+
+  // 支出の親カテゴリ（固定費、変動費、投資）を確保
+  const ensureExpenseParentCategories = async () => {
+    if (!session?.user?.id) return;
+
+    const parentCategoryNames = ['固定費', '変動費', '投資'];
+    const { data: existingParents } = await supabase
+      .from('categories')
+      .select('name')
+      .eq('user_id', session.user.id)
+      .eq('type', 'expense')
+      .is('parent_id', null);
+
+    const existingNames = (existingParents || []).map(c => c.name);
+    const missingNames = parentCategoryNames.filter(name => !existingNames.includes(name));
+
+    if (missingNames.length > 0) {
+      const newCategories = missingNames.map(name => ({
+        name,
+        type: 'expense' as const,
+        user_id: session.user.id,
+        parent_id: null,
+      }));
+
+      await supabase.from('categories').insert(newCategories);
+      refresh();
+    }
+  };
 
   const refresh = async () => {
     setLoading(true);
@@ -50,6 +109,7 @@ export default function CategoriesScreen() {
   const resetForm = () => {
     setName('');
     setType('expense');
+    setParentId(null);
     setEditingId(null);
   };
 
@@ -58,9 +118,19 @@ export default function CategoriesScreen() {
       Alert.alert('名前を入力してください');
       return;
     }
+
+    // 支出カテゴリで親カテゴリが選択されていない場合はエラー
+    if (type === 'expense' && !parentId) {
+      Alert.alert('親カテゴリを選択してください', '支出カテゴリは「固定費」「変動費」「投資」のいずれかを選択してください');
+      return;
+    }
+
     setSaving(true);
     if (editingId) {
-      const { error } = await supabase.from('categories').update({ name, type }).eq('id', editingId);
+      const { error } = await supabase
+        .from('categories')
+        .update({ name, type, parent_id: type === 'expense' ? parentId : null })
+        .eq('id', editingId);
       setSaving(false);
       if (error) {
         Alert.alert('更新に失敗しました', error.message);
@@ -70,6 +140,7 @@ export default function CategoriesScreen() {
       const { error } = await supabase.from('categories').insert({
         name,
         type,
+        parent_id: type === 'expense' ? parentId : null,
         user_id: session?.user?.id
       });
       setSaving(false);
@@ -88,6 +159,7 @@ export default function CategoriesScreen() {
     setEditingId(item.id);
     setName(item.name);
     setType(item.type);
+    setParentId(item.parent_id);
   };
 
   const onDelete = async (id: string) => {
@@ -124,13 +196,38 @@ export default function CategoriesScreen() {
           <View style={styles.typeRow}>
             <TouchableOpacity
               style={[styles.chip, type === 'expense' && styles.chipActive]}
-              onPress={() => setType('expense')}>
+              onPress={() => {
+                setType('expense');
+                setParentId(null);
+              }}>
               <Text style={type === 'expense' ? styles.chipTextActive : styles.chipText}>支出</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.chip, type === 'income' && styles.chipActive]} onPress={() => setType('income')}>
+            <TouchableOpacity
+              style={[styles.chip, type === 'income' && styles.chipActive]}
+              onPress={() => {
+                setType('income');
+                setParentId(null);
+              }}>
               <Text style={type === 'income' ? styles.chipTextActive : styles.chipText}>収入</Text>
             </TouchableOpacity>
           </View>
+          {type === 'expense' && (
+            <View>
+              <Text style={styles.label}>親カテゴリ</Text>
+              <View style={styles.parentCategoryRow}>
+                {parentCategories.map((parent) => (
+                  <TouchableOpacity
+                    key={parent.id}
+                    style={[styles.chip, parentId === parent.id && styles.chipActive]}
+                    onPress={() => setParentId(parent.id)}>
+                    <Text style={parentId === parent.id ? styles.chipTextActive : styles.chipText}>
+                      {parent.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
           <TouchableOpacity style={[styles.saveButton, saving && styles.buttonDisabled]} onPress={save} disabled={saving}>
             <Text style={styles.saveButtonText}>{saving ? '保存中...' : editingId ? '更新' : '追加'}</Text>
           </TouchableOpacity>
@@ -149,7 +246,7 @@ export default function CategoriesScreen() {
         </View>
       </>
     ),
-    [name, type, saving, editingId, loading]
+    [name, type, parentId, saving, editingId, loading, parentCategories]
   );
 
   return (
@@ -163,22 +260,32 @@ export default function CategoriesScreen() {
         ListHeaderComponent={renderHeader}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="none"
-        renderItem={({ item }) => (
-          <View style={styles.item}>
-            <View>
-              <Text style={styles.itemName}>{item.name}</Text>
-              <Text style={styles.itemType}>{item.type === 'expense' ? '支出' : '収入'}</Text>
+        renderItem={({ item }) => {
+          const isChild = item.parent_id !== null;
+          const parentName = isChild ? categories.find(c => c.id === item.parent_id)?.name : null;
+
+          return (
+            <View style={[styles.item, isChild && styles.childItem]}>
+              <View>
+                <Text style={styles.itemName}>
+                  {isChild ? `  └ ${item.name}` : item.name}
+                </Text>
+                <Text style={styles.itemType}>
+                  {item.type === 'expense' ? '支出' : '収入'}
+                  {parentName && ` / ${parentName}`}
+                </Text>
+              </View>
+              <View style={styles.itemActions}>
+                <TouchableOpacity onPress={() => onEdit(item)} style={styles.itemButton}>
+                  <Text>編集</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => onDelete(item.id)} style={[styles.itemButton, styles.deleteButton]}>
+                  <Text style={styles.deleteText}>削除</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <View style={styles.itemActions}>
-              <TouchableOpacity onPress={() => onEdit(item)} style={styles.itemButton}>
-                <Text>編集</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => onDelete(item.id)} style={[styles.itemButton, styles.deleteButton]}>
-                <Text style={styles.deleteText}>削除</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+          );
+        }}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text>カテゴリがありません。追加してください。</Text>
@@ -217,6 +324,17 @@ const styles = StyleSheet.create({
   },
   typeRow: {
     flexDirection: 'row',
+    gap: 8,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#333',
+  },
+  parentCategoryRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   chip: {
@@ -276,6 +394,10 @@ const styles = StyleSheet.create({
     borderColor: '#eee',
     borderRadius: 10,
     marginBottom: 8,
+  },
+  childItem: {
+    marginLeft: 16,
+    backgroundColor: '#f9f9f9',
   },
   itemName: {
     fontSize: 16,

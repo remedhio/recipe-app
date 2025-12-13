@@ -23,6 +23,7 @@ type Category = {
   id: string;
   name: string;
   type: 'income' | 'expense';
+  parent_id: string | null;
 };
 
 export default function EntriesScreen() {
@@ -34,6 +35,7 @@ export default function EntriesScreen() {
   const [note, setNote] = useState('');
   const [type, setType] = useState<'income' | 'expense'>('expense');
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [selectedParentId, setSelectedParentId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
   const [filterMonth, setFilterMonth] = useState(new Date());
@@ -51,10 +53,25 @@ export default function EntriesScreen() {
     enabled: !!session,
   });
 
-  const filteredCategories = useMemo(
-    () => categories.filter((c) => c.type === type),
+  // 親カテゴリと子カテゴリを分離
+  const parentCategories = useMemo(
+    () => categories.filter((c) => c.type === type && c.parent_id === null),
     [categories, type]
   );
+
+  const childCategories = useMemo(
+    () => categories.filter((c) => c.type === type && c.parent_id !== null),
+    [categories, type]
+  );
+
+  // 選択された親カテゴリの子カテゴリのみを表示
+  const filteredCategories = useMemo(() => {
+    if (type === 'expense' && selectedParentId) {
+      return childCategories.filter((c) => c.parent_id === selectedParentId);
+    }
+    // 収入カテゴリまたは親カテゴリ未選択の場合は全て表示（後方互換性のため）
+    return type === 'income' ? categories.filter((c) => c.type === type && c.parent_id === null) : [];
+  }, [categories, type, selectedParentId, childCategories]);
 
   const { data: entries = [], isLoading } = useQuery<Entry[]>({
     queryKey: ['entries', filterType, filterMonth],
@@ -128,6 +145,7 @@ export default function EntriesScreen() {
     setNote('');
     setType('expense');
     setCategoryId(null);
+    setSelectedParentId(null);
     setSelectedDate(new Date());
     setEditingId(null);
     setIsFormExpanded(false);
@@ -165,6 +183,15 @@ export default function EntriesScreen() {
     setNote(item.note || '');
     setType(item.type);
     setCategoryId(item.category_id);
+    // 編集時に親カテゴリも設定
+    if (item.category_id) {
+      const category = categories.find(c => c.id === item.category_id);
+      if (category?.parent_id) {
+        setSelectedParentId(category.parent_id);
+      } else {
+        setSelectedParentId(null);
+      }
+    }
     setSelectedDate(new Date(item.happened_on));
     setIsFormExpanded(true);
   };
@@ -356,23 +383,78 @@ export default function EntriesScreen() {
                 blurOnSubmit={true}
               />
 
-              <FlatList
-                data={filteredCategories}
-                keyExtractor={(item) => item.id}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.categoryList}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[styles.categoryChip, categoryId === item.id && styles.categoryChipActive]}
-                    onPress={() => setCategoryId(item.id)}>
-                    <Text style={categoryId === item.id ? styles.categoryChipTextActive : styles.categoryChipText}>
-                      {item.name}
+              {type === 'expense' && parentCategories.length > 0 && !selectedParentId && (
+                <>
+                  <Text style={styles.categoryLabel}>親カテゴリを選択</Text>
+                  <FlatList
+                    data={parentCategories}
+                    keyExtractor={(item) => item.id}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.categoryList}
+                    renderItem={({ item }) => (
+                      <TouchableOpacity
+                        style={[styles.categoryChip, styles.parentCategoryChip]}
+                        onPress={() => setSelectedParentId(item.id)}>
+                        <Text style={styles.categoryChipText}>{item.name}</Text>
+                      </TouchableOpacity>
+                    )}
+                  />
+                </>
+              )}
+
+              {type === 'expense' && selectedParentId && (
+                <>
+                  <View style={styles.categoryHeader}>
+                    <TouchableOpacity onPress={() => {
+                      setSelectedParentId(null);
+                      setCategoryId(null);
+                    }}>
+                      <Text style={styles.backButton}>← 戻る</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.categoryLabel}>
+                      {parentCategories.find(p => p.id === selectedParentId)?.name}のカテゴリ
                     </Text>
-                  </TouchableOpacity>
-                )}
-                ListEmptyComponent={<Text style={styles.emptyCategoryText}>カテゴリがありません</Text>}
-              />
+                  </View>
+                  <FlatList
+                    data={filteredCategories}
+                    keyExtractor={(item) => item.id}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.categoryList}
+                    renderItem={({ item }) => (
+                      <TouchableOpacity
+                        style={[styles.categoryChip, categoryId === item.id && styles.categoryChipActive]}
+                        onPress={() => setCategoryId(item.id)}>
+                        <Text style={categoryId === item.id ? styles.categoryChipTextActive : styles.categoryChipText}>
+                          {item.name}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    ListEmptyComponent={<Text style={styles.emptyCategoryText}>カテゴリがありません</Text>}
+                  />
+                </>
+              )}
+
+              {type === 'income' && (
+                <FlatList
+                  data={filteredCategories}
+                  keyExtractor={(item) => item.id}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.categoryList}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={[styles.categoryChip, categoryId === item.id && styles.categoryChipActive]}
+                      onPress={() => setCategoryId(item.id)}>
+                      <Text style={categoryId === item.id ? styles.categoryChipTextActive : styles.categoryChipText}>
+                        {item.name}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={<Text style={styles.emptyCategoryText}>カテゴリがありません</Text>}
+                />
+              )}
 
               <TextInput
                 ref={noteInputRef}
@@ -734,6 +816,27 @@ const styles = StyleSheet.create({
   categoryChipTextActive: {
     color: 'white',
     fontWeight: '600',
+  },
+  categoryLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#333',
+  },
+  categoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  backButton: {
+    color: '#2f95dc',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  parentCategoryChip: {
+    backgroundColor: '#e8f4f8',
+    borderColor: '#2f95dc',
   },
   emptyCategoryText: {
     color: '#9ca3af',
