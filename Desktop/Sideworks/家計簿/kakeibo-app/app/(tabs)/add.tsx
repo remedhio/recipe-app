@@ -14,6 +14,7 @@ type Category = {
   name: string;
   type: 'income' | 'expense';
   parent_id: string | null;
+  order: number | null;
 };
 
 export default function AddEntryScreen() {
@@ -40,18 +41,39 @@ export default function AddEntryScreen() {
   const { data: categories = [] } = useQuery<Category[]>({
     queryKey: ['categories'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('categories').select('*').order('name');
+      const { data, error } = await supabase.from('categories').select('*');
       if (error) throw error;
       return (data ?? []) as Category[];
     },
     enabled: !!session,
   });
 
-  // 親カテゴリと子カテゴリを分離
-  const parentCategories = useMemo(
-    () => categories.filter((c) => c.type === type && c.parent_id === null),
-    [categories, type]
-  );
+  // 親カテゴリと子カテゴリを分離し、order順にソート
+  const parentCategories = useMemo(() => {
+    const parents = categories.filter((c) => c.type === type && c.parent_id === null);
+    // 親カテゴリの順序を定義（支出）
+    const expenseParentOrder = ['固定費', '変動費', '投資'];
+    // 親カテゴリの順序を定義（収入）
+    const incomeParentOrder = ['給料', '貯金'];
+
+    return parents.sort((a, b) => {
+      if (type === 'expense') {
+        const indexA = expenseParentOrder.indexOf(a.name);
+        const indexB = expenseParentOrder.indexOf(b.name);
+        if (indexA === -1 && indexB === -1) return (a.order ?? 0) - (b.order ?? 0);
+        if (indexA === -1) return 1;
+        if (indexB === -1) return -1;
+        return indexA - indexB;
+      } else {
+        const indexA = incomeParentOrder.indexOf(a.name);
+        const indexB = incomeParentOrder.indexOf(b.name);
+        if (indexA === -1 && indexB === -1) return (a.order ?? 0) - (b.order ?? 0);
+        if (indexA === -1) return 1;
+        if (indexB === -1) return -1;
+        return indexA - indexB;
+      }
+    });
+  }, [categories, type]);
 
   const childCategories = useMemo(
     () => categories.filter((c) => c.type === type && c.parent_id !== null),
@@ -64,15 +86,21 @@ export default function AddEntryScreen() {
     return fixedExpense?.id || null;
   }, [parentCategories]);
 
-  // 選択された親カテゴリの子カテゴリのみを表示
+  // 選択された親カテゴリの子カテゴリのみを表示し、order順にソート
   const filteredCategories = useMemo(() => {
+    let filtered: Category[] = [];
     if (type === 'expense' && selectedParentId) {
-      return childCategories.filter((c) => c.parent_id === selectedParentId);
+      filtered = childCategories.filter((c) => c.parent_id === selectedParentId);
+    } else if (type === 'income' && selectedParentId) {
+      filtered = childCategories.filter((c) => c.parent_id === selectedParentId);
     }
-    if (type === 'income' && selectedParentId) {
-      return childCategories.filter((c) => c.parent_id === selectedParentId);
-    }
-    return [];
+    // order順にソート（orderが同じ場合は名前順）
+    return filtered.sort((a, b) => {
+      const orderA = a.order ?? 0;
+      const orderB = b.order ?? 0;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name);
+    });
   }, [categories, type, selectedParentId, childCategories]);
 
   // 選択されたカテゴリが固定費かどうかを判定
@@ -420,7 +448,7 @@ export default function AddEntryScreen() {
           {(type === 'expense' || type === 'income') && parentCategories.length > 0 && !selectedParentId && (
             <>
               <Text style={styles.categoryLabel}>親カテゴリを選択</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScrollView}>
+              <View style={styles.categoryContainer}>
                 {parentCategories.map((item) => (
                   <TouchableOpacity
                     key={item.id}
@@ -429,7 +457,7 @@ export default function AddEntryScreen() {
                     <Text style={styles.categoryChipText}>{item.name}</Text>
                   </TouchableOpacity>
                 ))}
-              </ScrollView>
+              </View>
             </>
           )}
 
@@ -446,7 +474,7 @@ export default function AddEntryScreen() {
                   {parentCategories.find(p => p.id === selectedParentId)?.name}のカテゴリ
                 </Text>
               </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScrollView}>
+              <View style={styles.categoryContainer}>
                 {filteredCategories.length > 0 ? (
                   filteredCategories.map((item) => (
                     <TouchableOpacity
@@ -461,7 +489,7 @@ export default function AddEntryScreen() {
                 ) : (
                   <Text style={styles.emptyCategoryText}>カテゴリがありません</Text>
                 )}
-              </ScrollView>
+              </View>
             </>
           )}
 
@@ -630,7 +658,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 14,
   },
-  categoryScrollView: {
+  categoryContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     marginBottom: 8,
   },
   categoryChip: {
@@ -639,7 +670,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1.5,
     borderColor: '#e5e7eb',
-    marginRight: 10,
     backgroundColor: '#ffffff',
   },
   categoryChipActive: {
